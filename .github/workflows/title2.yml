@@ -1,119 +1,33 @@
-name: 提取商品标题与属性
-
-on:
-  workflow_dispatch:
-    inputs:
-      url:
-        description: '1688商品网址'
-        required: true
-        default: 'https://detail.1688.com/offer/'
-
-jobs:
-  extract-product:
-    runs-on: ubuntu-latest
+- name: 分步测试
+  run: |
+    # 1. 先只安装
+    pip install beautifulsoup4
     
-    steps:
-      - name: 1. 抓取商品页面
-        run: |
-          echo "开始抓取: ${{ github.event.inputs.url }}"
-          curl -s "${{ github.event.inputs.url }}" -o product_page.html
-          
-      - name: 2. 提取属性并生成标题
-        run: |
-          pip install googletrans beautifulsoup4
-          
-          python -c "
-from bs4 import BeautifulSoup
-from googletrans import Translator
-import json
-import re
-
-# 读取页面
-with open('product_page.html', 'r', encoding='utf-8') as f:
-    soup = BeautifulSoup(f, 'html.parser')
-
-# 提取商品标题
-title_tag = soup.find('title')
-chinese_title = title_tag.get_text().strip() if title_tag else '未找到标题'
-print('原始标题:', chinese_title)
-
-# 提取商品属性表
-all_specs = {}
-
-# 查找所有表格
-tables = soup.find_all('table')
-for table in tables:
-    rows = table.find_all('tr')
-    for row in rows:
-        cells = row.find_all(['td', 'th'])
-        if len(cells) >= 2:
-            key = cells[0].get_text(strip=True)
-            value = cells[1].get_text(strip=True)
-            if key and value:
-                all_specs[key] = value
-
-# 查找dl标签（另一种属性展示方式）
-dl_tags = soup.find_all('dl')
-for dl in dl_tags:
-    dt_tags = dl.find_all('dt')
-    dd_tags = dl.find_all('dd')
-    for dt, dd in zip(dt_tags, dd_tags):
-        key = dt.get_text(strip=True)
-        value = dd.get_text(strip=True)
-        if key and value:
-            all_specs[key] = value
-
-print(f'找到 {len(all_specs)} 个属性')
-
-# 过滤品牌名（保留七新品牌，删除其他）
-filtered_specs = {}
-brand_keywords = ['品牌', '商标', '厂家']
-movement_keywords = ['机芯', 'movement']
-
-for key, value in all_specs.items():
-    # 如果是品牌信息但不是机芯品牌
-    if any(brand in key for brand in brand_keywords):
-        # 检查是否包含机芯相关词
-        if not any(movement in key for movement in movement_keywords):
-            continue  # 跳过普通品牌信息
+    # 2. 单独测试安装
+    python -c "import bs4; print('第一步：BeautifulSoup安装成功')"
     
-    filtered_specs[key] = value
-
-# 翻译标题
-translator = Translator()
-english_title = translator.translate(chinese_title, src='zh-cn', dest='en').text
-
-# 保存到文件
-import json
-with open('title.txt', 'w', encoding='utf-8') as f:
-    f.write(english_title)
-
-with open('specs.json', 'w', encoding='utf-8') as f:
-    json.dump(filtered_specs, f, ensure_ascii=False, indent=2)
-
-print('英文标题:', english_title)
-print(f'过滤后属性: {len(filtered_specs)} 个')
-print('结果已保存到 title.txt 和 specs.json')
-          "
-          
-      - name: 3. 显示提取结果
-        run: |
-          echo "=== 提取结果 ==="
-          echo "英文标题: $(cat title.txt)"
-          echo ""
-          echo "商品属性:"
-          python -c "
-import json
-with open('specs.json', 'r', encoding='utf-8') as f:
-    specs = json.load(f)
-for i, (key, value) in enumerate(specs.items()):
-    print(f'{i+1}. {key}: {value}')
-          "
-          
-      - name: 4. 保存结果文件
-        uses: actions/upload-artifact@v4
-        with:
-          name: 商品信息
-          path: |
-            title.txt
-            specs.json
+    # 3. 安装另一个库
+    pip install googletrans==3.1.0a0
+    
+    # 4. 测试第二个库
+    python -c "from googletrans import Translator; print('第二步：Translator安装成功')"
+    
+    # 5. 完整测试
+    python << 'EOF'
+print('开始完整测试...')
+try:
+    from bs4 import BeautifulSoup
+    from googletrans import Translator
+    print('✅ 所有库导入成功')
+    
+    # 测试文件读取
+    with open('page.html', 'r', encoding='utf-8') as f:
+        soup = BeautifulSoup(f, 'html.parser')
+        title = soup.find('title')
+        if title:
+            print(f'找到标题: {title.text[:30]}...')
+        else:
+            print('未找到标题标签')
+except Exception as e:
+    print(f'❌ 错误: {e}')
+EOF
