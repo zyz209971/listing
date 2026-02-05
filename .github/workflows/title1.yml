@@ -1,0 +1,171 @@
+name: 提取并优化商品属性
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: '商品网址'
+        required: true
+        default: 'https://detail.1688.com/offer/'
+
+jobs:
+  process-specs:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 1. 抓取网页提取属性表
+        run: |
+          curl -s "${{ github.event.inputs.url }}" -o page.html
+          
+      - name: 2. 处理属性和生成标题
+        run: |
+          pip install beautifulsoup4 googletrans
+          
+          python << 'EOF'
+from bs4 import BeautifulSoup
+from googletrans import Translator
+import json
+
+translator = Translator()
+
+# 读取网页
+with open('page.html', 'r', encoding='utf-8') as f:
+    soup = BeautifulSoup(f, 'html.parser')
+
+# 第一步：提取属性表
+specs = {}
+tables = soup.find_all('table')
+for table in tables:
+    rows = table.find_all('tr')
+    for row in rows:
+        cells = row.find_all(['td', 'th'])
+        if len(cells) >= 2:
+            key = cells[0].get_text(strip=True)
+            value = cells[1].get_text(strip=True) if len(cells) > 1 else ''
+            if key and value:
+                specs[key] = value
+
+# 第二步：过滤品牌名
+filtered_specs = {}
+watch_brand_keywords = ['品牌', '牌子', '商标', '厂牌', '制造商', '生产商']
+movement_brand_keywords = ['机芯品牌', '机芯型号', '机芯类型', 'movement']
+
+for key, value in specs.items():
+    # 如果是手表品牌相关，跳过
+    is_watch_brand = False
+    for kw in watch_brand_keywords:
+        if kw in key:
+            is_watch_brand = True
+            break
+    
+    # 如果是机芯品牌，保留
+    is_movement_brand = False
+    for kw in movement_brand_keywords:
+        if kw in key:
+            is_movement_brand = True
+            break
+    
+    if is_watch_brand and not is_movement_brand:
+        continue  # 跳过手表品牌
+    
+    filtered_specs[key] = value
+
+# 第三步：生成英文标题
+all_text = ' '.join(filtered_specs.values())
+keywords = []
+
+# 关键词映射
+keyword_map = {
+    '石英': 'Quartz', '自动': 'Automatic', '机械': 'Mechanical',
+    '不锈钢': 'Stainless Steel', '防水': 'Water Resistant',
+    '夜光': 'Luminous', '蓝宝石': 'Sapphire', 
+    '男士': "Men's", '女士': "Women's", '情侣': "Couple's"
+}
+
+for cn, en in keyword_map.items():
+    if cn in all_text:
+        keywords.append(en)
+
+# 构建标题
+title_parts = []
+
+# 材质
+if 'Stainless Steel' in keywords:
+    title_parts.append('Stainless Steel')
+
+# 机芯类型
+if 'Quartz' in keywords:
+    title_parts.append('Quartz Watch')
+elif 'Automatic' in keywords:
+    title_parts.append('Automatic Watch')
+else:
+    title_parts.append('Watch')
+
+# 功能
+if 'Water Resistant' in keywords:
+    title_parts.append('Water Resistant')
+
+# 性别
+if "Men's" in keywords:
+    title_parts.append("Men's")
+elif "Women's" in keywords:
+    title_parts.append("Women's")
+
+english_title = ' '.join(title_parts)
+
+# 第四步：翻译过滤后的属性表（去掉手表品牌）
+translated_specs = {}
+for key, value in filtered_specs.items():
+    try:
+        if any(char >= '\u4e00' and char <= '\u9fff' for char in key):
+            trans_key = translator.translate(key, src='zh-cn', dest='en').text
+        else:
+            trans_key = key
+        
+        if any(char >= '\u4e00' and char <= '\u9fff' for char in value):
+            trans_value = translator.translate(value, src='zh-cn', dest='en').text
+        else:
+            trans_value = value
+        
+        translated_specs[trans_key] = trans_value
+    except:
+        translated_specs[key] = value
+
+# 保存结果
+result = {
+    'english_title': english_title,
+    'filtered_specs_count': len(filtered_specs),
+    'translated_specs': translated_specs,
+    'keywords': keywords
+}
+
+with open('result.json', 'w', encoding='utf-8') as f:
+    json.dump(result, f, ensure_ascii=False, indent=2)
+
+print(f"英文标题: {english_title}")
+print(f"过滤后属性数量: {len(filtered_specs)}/{len(specs)}")
+print(f"翻译属性数量: {len(translated_specs)}")
+EOF
+          
+      - name: 3. 显示结果
+        run: |
+          echo "=== 处理结果 ==="
+          if [ -f "result.json" ]; then
+            python << 'EOF'
+import json
+with open('result.json', 'r', encoding='utf-8') as f:
+    data = json.load(f)
+
+print(f"英文标题: {data['english_title']}")
+print(f"关键词: {', '.join(data['keywords'])}")
+print(f"\n翻译后属性表:")
+for key, value in list(data['translated_specs'].items())[:5]:
+    print(f"  {key}: {value}")
+EOF
+          fi
+          
+      - name: 4. 保存
+        uses: actions/upload-artifact@v4
+        with:
+          name: 处理结果
+          path: result.json
