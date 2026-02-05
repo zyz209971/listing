@@ -1,0 +1,410 @@
+name: 1688商品抓取与自动翻译
+
+on:
+  workflow_dispatch:
+    inputs:
+      product_url:
+        description: '1688商品网址'
+        required: true
+        default: 'https://detail.1688.com/offer/'
+      target_market:
+        description: '目标市场'
+        required: false
+        default: 'US'
+        type: choice
+        options:
+          - US
+          - EU
+          - Global
+      min_order_qty:
+        description: '最小起订量（如未抓取到）'
+        required: false
+        default: '100'
+
+jobs:
+  scrape-and-translate:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 1. 开始抓取任务
+        run: |
+          echo "🔄 开始1688商品抓取与翻译"
+          echo "商品网址: ${{ github.event.inputs.product_url }}"
+          echo "目标市场: ${{ github.event.inputs.target_market }}"
+          echo "MOQ: ${{ github.event.inputs.min_order_qty }}"
+          
+      - name: 2. 拉取代码
+        uses: actions/checkout@v3
+        
+      - name: 3. 设置Python环境
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          
+      - name: 4. 安装依赖包
+        run: |
+          # 安装抓取和翻译需要的包
+          pip install requests beautifulsoup4
+          pip install deep-translator  # 翻译库
+          pip install python-dotenv
+          
+      - name: 5. 创建智能抓取脚本
+        run: |
+          cat > smart_scraper.py << 'EOF'
+          import requests
+          from bs4 import BeautifulSoup
+          import json
+          import re
+          import sys
+          from datetime import datetime
+          
+          # 导入翻译库
+          try:
+              from deep_translator import GoogleTranslator
+              翻译器可用 = True
+          except:
+              翻译器可用 = False
+              print("⚠️  deep-translator不可用，将使用简单翻译")
+          
+          def 翻译成英文(中文文本, 最大长度=200):
+              """将中文翻译成英文"""
+              if not 中文文本 or len(中文文本.strip()) < 2:
+                  return 中文文本
+              
+              要翻译的文本 = 中文文本[:最大长度]
+              
+              try:
+                  if 翻译器可用:
+                      # 使用Google翻译
+                      翻译结果 = GoogleTranslator(source='zh-CN', target='en').translate(要翻译的文本)
+                  else:
+                      # 简单关键词替换（备用方案）
+                      关键词映射 = {
+                          '自动机械': 'Automatic',
+                          '石英': 'Quartz', 
+                          '太阳能': 'Solar',
+                          '不锈钢': 'Stainless Steel',
+                          '男士': "Men's",
+                          '女士': "Women's",
+                          '手表': 'Watch',
+                          '防水': 'Waterproof',
+                          '夜光': 'Luminous',
+                          '蓝宝石': 'Sapphire',
+                      }
+                      翻译结果 = 要翻译的文本
+                      for 中文, 英文 in 关键词映射.items():
+                          翻译结果 = 翻译结果.replace(中文, 英文)
+                  
+                  return 翻译结果
+              except Exception as 错误:
+                  print(f"⚠️ 翻译失败: {错误}")
+                  return 中文文本
+          
+          def 优化英文标题(中文标题, 目标市场="US"):
+              """将中文标题优化为适合电商平台的英文标题"""
+              # 1. 先翻译
+              英文标题 = 翻译成英文(中文标题)
+              
+              # 2. 针对手表的关键词优化
+              优化规则 = {
+                  '自动机械': 'Automatic Mechanical',
+                  '石英表': 'Quartz Watch', 
+                  '太阳能': 'Solar Powered',
+                  '不锈钢': 'Stainless Steel',
+                  '钛金属': 'Titanium',
+                  '蓝宝石镜面': 'Sapphire Crystal Glass',
+                  '男士': "Men's",
+                  '女士': "Women's", 
+                  '情侣': "Couple's",
+                  '防水': 'Water Resistant',
+                  '夜光': 'Luminous Dial',
+                  '商务': 'Business Style',
+                  '运动': 'Sports Style',
+              }
+              
+              # 应用优化规则
+              优化后标题 = 英文标题
+              for 中文词, 英文词 in 优化规则.items():
+                  if 中文词 in 中文标题:
+                      # 替换为更好的英文表达
+                      优化后标题 = 优化后标题.replace(
+                          翻译成英文(中文词).lower(),
+                          英文词
+                      )
+              
+              # 3. 确保标题以卖点开头
+              重要关键词 = ['Stainless Steel', 'Automatic', 'Quartz', "Men's", "Women's"]
+              for 关键词 in 重要关键词:
+                  if 关键词 in 优化后标题 and not 优化后标题.startswith(关键词):
+                      # 重新排序，把关键词放前面
+                      单词列表 = 优化后标题.split()
+                      if 关键词 in 单词列表:
+                          单词列表.remove(关键词)
+                          优化后标题 = f"{关键词} {' '.join(单词列表)}"
+              
+              # 4. 如果标题没有"Watch"，加上
+              if 'watch' not in 优化后标题.lower():
+                  优化后标题 += ' Watch'
+              
+              # 5. 市场特定优化
+              if 目标市场 == "US":
+                  优化后标题 = 优化后标题.replace('Waterproof', 'Water Resistant')
+                  if 'Luxury' not in 优化后标题:
+                      优化后标题 += ' - High Quality'
+                      
+              elif 目标市场 == "EU":
+                  优化后标题 = 优化后标题.replace('Watch', 'Wristwatch')
+                  if 'CE' not in 优化后标题:
+                      优化后标题 += ' CE Certified'
+              
+              # 清理多余空格
+              优化后标题 = 优化后标题.replace('  ', ' ').strip()
+              
+              return 英文标题, 优化后标题
+          
+          def 提取价格(价格文本):
+              """从文本中提取价格数字"""
+              价格 = 0
+              模式列表 = [
+                  r'¥\s*(\d+\.?\d*)',
+                  r'￥\s*(\d+\.?\d*)', 
+                  r'(\d+\.?\d*)\s*[元块]',
+                  r'price\s*[:：]?\s*(\d+\.?\d*)',
+              ]
+              
+              for 模式 in 模式列表:
+                  匹配 = re.search(模式, 价格文本, re.IGNORECASE)
+                  if 匹配:
+                      try:
+                          价格 = float(匹配.group(1))
+                          break
+                      except:
+                          continue
+              
+              return 价格
+          
+          def 计算美元价格(人民币价格):
+              """计算最终美元价格：美元 = 人民币 ÷ 0.7 ÷ 0.68"""
+              if not 人民币价格 or 人民币价格 <= 0:
+                  return {"人民币价格": 0, "美元价格": 0}
+              
+              原始人民币 = float(人民币价格)
+              含利润价格 = 原始人民币 / 0.7
+              美元价格 = 含利润价格 / 0.68
+              
+              return {
+                  '人民币价格': round(原始人民币, 2),
+                  '含利润价格': round(含利润价格, 2),
+                  '美元价格': round(美元价格, 2),
+                  '利润率': 42.86
+              }
+          
+          def 抓取商品信息(商品网址, 目标市场="US", 默认MOQ=100):
+              """主抓取函数"""
+              print(f"🎯 开始抓取: {商品网址}")
+              print(f"🌍 目标市场: {目标市场}")
+              
+              # 请求头设置
+              请求头 = {
+                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+              }
+              
+              try:
+                  # 发送请求
+                  响应 = requests.get(商品网址, headers=请求头, timeout=15)
+                  解析器 = BeautifulSoup(响应.text, 'html.parser')
+                  
+                  # 提取中文标题
+                  中文标题 = "未找到标题"
+                  for 选择器 in ['.d-title', '.title', 'h1.title', 'h1']:
+                      元素 = 解析器.select_one(选择器)
+                      if 元素 and 元素.text.strip():
+                          中文标题 = 元素.text.strip()[:200]
+                          break
+                  
+                  print(f"📝 中文标题: {中文标题}")
+                  
+                  # 翻译和优化标题
+                  原始英文, 优化英文 = 优化英文标题(中文标题, 目标市场)
+                  print(f"🌐 原始翻译: {原始英文}")
+                  print(f"✨ 优化后: {优化英文}")
+                  
+                  # 提取价格
+                  价格 = 0
+                  for 选择器 in ['.price', '.value', '.amount', '.offer-price']:
+                      元素 = 解析器.select_one(选择器)
+                      if 元素 and 元素.text.strip():
+                          价格 = 提取价格(元素.text.strip())
+                          if 价格 > 0:
+                              break
+                  
+                  # 提取MOQ
+                  MOQ = 默认MOQ
+                  for 选择器 in ['.moq', '.min-order', '.quantity']:
+                      元素 = 解析器.select_one(选择器)
+                      if 元素 and 元素.text.strip():
+                          匹配 = re.search(r'(\d+)', 元素.text.strip())
+                          if 匹配:
+                              MOQ = int(匹配.group(1))
+                              break
+                  
+                  # 提取图片
+                  图片列表 = []
+                  for 图片 in 解析器.select('img')[:15]:
+                      地址 = 图片.get('src') or 图片.get('data-src')
+                      if 地址 and 'http' in 地址 and 'logo' not in 地址.lower():
+                          if 地址.startswith('//'):
+                              地址 = 'https:' + 地址
+                          图片列表.append(地址)
+                  
+                  # 提取规格参数
+                  规格字典 = {}
+                  for 行 in 解析器.select('tr'):
+                      单元格 = 行.select('td, th')
+                      if len(单元格) >= 2:
+                          键 = 单元格[0].text.strip()
+                          值 = 单元格[1].text.strip() if len(单元格) > 1 else ''
+                          if 键 and 值:
+                              规格字典[键] = 值
+                  
+                  # 计算价格
+                  价格信息 = 计算美元价格(价格)
+                  
+                  # 翻译规格参数（前5个）
+                  翻译后规格 = {}
+                  for 键, 值 in list(规格字典.items())[:5]:
+                      try:
+                          翻译键 = 翻译成英文(键)
+                          翻译值 = 翻译成英文(值)
+                          翻译后规格[翻译键] = 翻译值
+                      except:
+                          翻译后规格[键] = 值
+                  
+                  # 构建商品数据
+                  商品数据 = {
+                      '基本信息': {
+                          '来源网址': 商品网址,
+                          '中文标题': 中文标题,
+                          '英文翻译': 原始英文,
+                          '优化英文标题': 优化英文,
+                          '目标市场': 目标市场,
+                          '最小起订量': MOQ,
+                          'SKU编号': f"WS-{datetime.now().strftime('%Y%m%d%H%M')}",
+                          '抓取时间': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                      },
+                      '价格信息': {
+                          '人民币价格': 价格信息['人民币价格'],
+                          '美元价格': 价格信息['美元价格'],
+                          '计算步骤': {
+                              '步骤1_人民币': f"¥{价格信息['人民币价格']}",
+                              '步骤2_含利润': f"¥{价格信息['含利润价格']} (÷0.7)",
+                              '步骤3_美元': f"${价格信息['美元价格']} (÷0.68)",
+                          },
+                          '利润率': f"{价格信息['利润率']}%"
+                      },
+                      '商品详情': {
+                          '图片数量': len(图片列表),
+                          '示例图片': 图片列表[:3] if 图片列表 else [],
+                          '规格参数': 翻译后规格,
+                          '参数数量': len(翻译后规格)
+                      }
+                  }
+                  
+                  # 保存到文件
+                  with open('商品数据.json', 'w', encoding='utf-8') as 文件:
+                      json.dump(商品数据, 文件, ensure_ascii=False, indent=2)
+                  
+                  print(f"\n✅ 抓取完成！")
+                  print(f"   中文标题: {中文标题[:50]}...")
+                  print(f"   优化英文: {优化英文[:60]}...")
+                  print(f"   人民币: ¥{价格信息['人民币价格']}")
+                  print(f"   美元: ${价格信息['美元价格']:.2f}")
+                  print(f"   MOQ: {MOQ}")
+                  
+                  return 商品数据
+                  
+              except Exception as 错误:
+                  print(f"❌ 抓取失败: {错误}")
+                  return {'错误': str(错误)}
+          
+          # 主程序
+          if __name__ == "__main__":
+              if len(sys.argv) < 2:
+                  print("请提供1688商品网址")
+                  sys.exit(1)
+              
+              网址 = sys.argv[1]
+              市场 = sys.argv[2] if len(sys.argv) > 2 else "US"
+              MOQ = int(sys.argv[3]) if len(sys.argv) > 3 else 100
+              
+              结果 = 抓取商品信息(网址, 市场, MOQ)
+              
+              if '错误' in 结果:
+                  print(f"❌ 任务失败: {结果['错误']}")
+                  sys.exit(1)
+          EOF
+          
+      - name: 6. 运行抓取和翻译
+        run: |
+          echo "🚀 开始抓取并翻译商品信息..."
+          python smart_scraper.py "${{ github.event.inputs.product_url }}" "${{ github.event.inputs.target_market }}" "${{ github.event.inputs.min_order_qty }}"
+          
+      - name: 7. 显示抓取结果
+        run: |
+          echo "📊 抓取与翻译结果"
+          echo "=================="
+          
+          if [ -f "商品数据.json" ]; then
+              python << 'EOF'
+          import json
+          with open('商品数据.json', 'r', encoding='utf-8') as f:
+              数据 = json.load(f)
+          
+          基本信息 = 数据.get('基本信息', {})
+          价格信息 = 数据.get('价格信息', {})
+          
+          print("✅ 抓取与翻译成功！")
+          print("")
+          print("📦 商品信息:")
+          print(f"   中文标题: {基本信息.get('中文标题', '无')}")
+          print(f"   优化英文: {基本信息.get('优化英文标题', '无')}")
+          print(f"   目标市场: {基本信息.get('目标市场', '无')}")
+          print(f"   MOQ: {基本信息.get('最小起订量', 0)}")
+          print("")
+          
+          print("💰 价格信息:")
+          步骤 = 价格信息.get('计算步骤', {})
+          for 步骤名, 步骤值 in 步骤.items():
+              print(f"   {步骤值}")
+          print(f"   最终美元价格: ${价格信息.get('美元价格', 0):.2f}")
+          print("")
+          
+          print("📎 商品详情:")
+          详情 = 数据.get('商品详情', {})
+          print(f"   图片数量: {详情.get('图片数量', 0)}")
+          print(f"   规格参数: {详情.get('参数数量', 0)} 项")
+          
+          # 显示翻译后的规格
+          规格 = 详情.get('规格参数', {})
+          if 规格:
+              print("   翻译后规格:")
+              for 键, 值 in list(规格.items())[:3]:
+                  print(f"     - {键}: {值}")
+          
+          EOF
+          else
+              echo "❌ 抓取结果文件不存在"
+          fi
+          
+      - name: 8. 保存结果文件
+        uses: actions/upload-artifact@v3
+        with:
+          name: 商品数据-翻译版
+          path: 商品数据.json
+          retention-days: 30
+          
+      - name: 9. 任务完成
+        run: |
+          echo "✅ 抓取与翻译任务完成！"
+          echo "📁 结果已保存为Artifact"
