@@ -1,0 +1,384 @@
+name: 智能抓取翻译
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: '1688商品详情页URL'
+        required: true
+        default: 'https://detail.1688.com/offer/'
+
+jobs:
+  smart-scrape:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 检查URL有效性
+        run: |
+          if [[ ! "${{ github.event.inputs.url }}" =~ ^https://detail\.1688\.com/.* ]]; then
+            echo "错误：请输入有效的1688商品详情页URL"
+            exit 1
+          fi
+          
+      - name: 设置Python环境
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+          
+      - name: 抓取网页内容
+        id: scrape
+        run: |
+          echo "正在抓取: ${{ github.event.inputs.url }}"
+          curl -s -L "${{ github.event.inputs.url }}" \
+            -H 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' \
+            -o page.html
+          
+          if [ ! -s page.html ]; then
+            echo "错误：页面抓取失败"
+            exit 1
+          fi
+          
+      - name: 处理数据
+        id: process
+        run: |
+          cat > process.py << 'EOF'
+          import re
+          import json
+          from html import unescape
+          
+          def read_html_file(filename):
+              """读取HTML文件，尝试不同编码"""
+              try:
+                  with open(filename, 'r', encoding='utf-8') as f:
+                      return f.read()
+              except:
+                  with open(filename, 'r', encoding='gbk', errors='ignore') as f:
+                      return f.read()
+          
+          def clean_html_tags(text):
+              """清理HTML标签和实体"""
+              if not text:
+                  return ""
+              text = re.sub(r'<[^>]+>', ' ', text)
+              text = unescape(text)
+              text = re.sub(r'\s+', ' ', text).strip()
+              return text
+          
+          def extract_title(html):
+              """从HTML中提取页面标题"""
+              patterns = [
+                  r'<title[^>]*>(.*?)</title>',
+                  r'<meta\s+property="og:title"\s+content="([^"]+)"',
+                  r'<meta\s+name="title"\s+content="([^"]+)"',
+                  r'"subject"\s*:\s*"([^"]+)"'
+              ]
+              
+              for pattern in patterns:
+                  match = re.search(pattern, html, re.IGNORECASE | re.DOTALL)
+                  if match:
+                      title = match.group(1)
+                      title = clean_html_tags(title)
+                      if title and len(title) > 3:
+                          return title
+              
+              h1_match = re.search(r'<h1[^>]*>(.*?)</h1>', html, re.IGNORECASE | re.DOTALL)
+              if h1_match:
+                  return clean_html_tags(h1_match.group(1))
+              
+              return ""
+          
+          def extract_attributes(html):
+              """提取商品属性"""
+              attributes = {}
+              
+              # 从表格中提取
+              table_pattern = r'<table[^>]*class="[^"]*offer-table[^"]*"[^>]*>(.*?)</table>'
+              table_match = re.search(table_pattern, html, re.IGNORECASE | re.DOTALL)
+              if table_match:
+                  table_html = table_match.group(1)
+                  tr_matches = re.findall(r'<tr[^>]*>(.*?)</tr>', table_html, re.IGNORECASE | re.DOTALL)
+                  
+                  for tr in tr_matches:
+                      th_match = re.search(r'<th[^>]*>(.*?)</th>', tr, re.IGNORECASE | re.DOTALL)
+                      td_match = re.search(r'<td[^>]*>(.*?)</td>', tr, re.IGNORECASE | re.DOTALL)
+                      
+                      if th_match and td_match:
+                          key = clean_html_tags(th_match.group(1)).strip('：:')
+                          value = clean_html_tags(td_match.group(1))
+                          if key and value:
+                              attributes[key] = value
+              
+              # 从dl标签中提取
+              if len(attributes) < 3:
+                  dl_pattern = r'<dl[^>]*class="[^"]*params[^"]*"[^>]*>(.*?)</dl>'
+                  dl_match = re.search(dl_pattern, html, re.IGNORECASE | re.DOTALL)
+                  
+                  if dl_match:
+                      dl_html = dl_match.group(1)
+                      dt_matches = re.findall(r'<dt[^>]*>(.*?)</dt>\s*<dd[^>]*>(.*?)</dd>', dl_html, re.IGNORECASE | re.DOTALL)
+                      
+                      for dt_content, dd_content in dt_matches:
+                          key = clean_html_tags(dt_content).strip('：:')
+                          value = clean_html_tags(dd_content)
+                          if key and value:
+                              attributes[key] = value
+              
+              return attributes
+          
+          def remove_brand_info(text):
+              """删除品牌信息，保留机芯品牌"""
+              if not text:
+                  return text
+              
+              # 保护机芯品牌
+              movement_brands = [
+                  'miyota', 'Miyota', 'MIYOTA', '西铁城机芯', 'citizen机芯',
+                  'seiko', 'Seiko', 'SEIKO', '精工机芯', 'nh35', 'nh36', '4r36', '6r15', 
+                  'eta', 'ETA', '瑞士机芯', 'swiss', 'Swiss', 'SWISS',
+                  'ronda', 'Ronda', 'RONDA', 'isa', 'ISA', 'pc21', 'pc32',
+                  '海鸥', 'SeaGull', 'seagull', '北京', 'beijing', '上海', 'shanghai'
+              ]
+              
+              movement_placeholders = {}
+              for movement in movement_brands:
+                  if movement in text.lower():
+                      placeholder = f"__MOV_{movement.upper().replace(' ', '_')}__"
+                      text = re.sub(re.escape(movement), placeholder, text, flags=re.IGNORECASE)
+                      movement_placeholders[placeholder] = movement
+              
+              # 删除品牌相关模式
+              brand_patterns = [
+                  r'(品牌|牌子|brand|商标|厂牌|厂商|厂家|制造商|生产商|出品|制作)[:：\s]*[^\s,，。!！?？;；、]{1,20}',
+                  r'(类似|仿|复刻|同款|风格|款式|设计)[\s\-]*[^\s,，。!！?？;；、]{1,15}[:：\s]*[^\s,，。!！?？;；、]{1,20}',
+                  r'(logo|标志|标识|商标|标徽|徽标|印记|刻字|雕刻|镌刻)[:：\s]*[^\s,，。!！?？;；、]{1,20}',
+                  r'(原单|尾单|外贸|出口|订单|余单|库存|撤柜|专柜)[\s\-]*[^\s,，。!！?？;；、]{0,15}',
+                  r'[^\s,，。!！?？;；、]{1,10}牌(?:\s+[^\s,，。!！?？;；、]{0,10})?',
+              ]
+              
+              for pattern in brand_patterns:
+                  text = re.sub(pattern, '', text, flags=re.IGNORECASE)
+              
+              # 恢复机芯品牌
+              for placeholder, movement in movement_placeholders.items():
+                  text = text.replace(placeholder, movement)
+              
+              # 清理格式
+              text = re.sub(r'[，,]\s*[，,]', '', text)
+              text = re.sub(r'^\s*[,\-，。！!？?;；、]\s*', '', text)
+              text = re.sub(r'\s*[,\-，。！!？?;；、]\s*$', '', text)
+              text = re.sub(r'\s+', ' ', text)
+              
+              return text.strip()
+          
+          def generate_clean_title(original_title, attributes):
+              """生成清理后的标题"""
+              if not original_title:
+                  return ""
+              
+              # 删除品牌信息
+              cleaned_text = remove_brand_info(original_title)
+              
+              # 清理属性值
+              clean_attributes = {}
+              for key, value in attributes.items():
+                  clean_value = remove_brand_info(value)
+                  if clean_value:
+                      clean_key = remove_brand_info(key)
+                      if clean_key:
+                          clean_attributes[clean_key] = clean_value
+              
+              # 保存结果
+              with open('cleaned_title.txt', 'w', encoding='utf-8') as f:
+                  f.write(cleaned_text)
+              
+              with open('cleaned_attributes.json', 'w', encoding='utf-8') as f:
+                  json.dump(clean_attributes, f, ensure_ascii=False, indent=2)
+              
+              with open('original_title.txt', 'w', encoding='utf-8') as f:
+                  f.write(original_title)
+              
+              print(f"原始标题: {original_title}")
+              print(f"清理后标题: {cleaned_text}")
+              print(f"清理后属性数量: {len(clean_attributes)}")
+              
+              return cleaned_text
+          
+          # 主函数
+          html = read_html_file('page.html')
+          original_title = extract_title(html)
+          attributes = extract_attributes(html)
+          cleaned_title = generate_clean_title(original_title, attributes)
+          EOF
+          
+          python process.py
+          
+      - name: 翻译所有内容
+        id: translate
+        run: |
+          pip install googletrans==4.0.0-rc1
+          
+          cat > translate.py << 'EOF'
+          from googletrans import Translator
+          import json
+          import re
+          
+          def translate_text(text, src='zh-cn', dest='en'):
+              """翻译文本到英文"""
+              if not text or len(text.strip()) < 2:
+                  return text
+              
+              try:
+                  translator = Translator()
+                  translated = translator.translate(text, src=src, dest=dest)
+                  result = translated.text
+                  
+                  # 基本清理
+                  result = re.sub(r'\s+', ' ', result)
+                  result = result.strip()
+                  
+                  return result
+              except Exception as e:
+                  print(f"翻译错误: {e}")
+                  return text
+          
+          def translate_attributes(attributes):
+              """翻译所有属性"""
+              translated = {}
+              
+              # 常见属性键名翻译映射
+              key_mapping = {
+                  '机芯类型': 'Movement',
+                  '机芯': 'Movement',
+                  '型号': 'Model',
+                  '表带材质': 'Strap Material',
+                  '表壳材质': 'Case Material',
+                  '表盘材质': 'Dial Material',
+                  '表镜材质': 'Crystal Material',
+                  '表扣': 'Clasp',
+                  '表径': 'Case Diameter',
+                  '厚度': 'Thickness',
+                  '防水': 'Water Resistance',
+                  '功能': 'Functions',
+                  '适用人群': 'For',
+                  '风格': 'Style',
+                  '颜色': 'Color',
+                  '表带颜色': 'Strap Color',
+                  '表盘颜色': 'Dial Color',
+                  '产地': 'Origin',
+                  '品牌': 'Brand',
+                  '重量': 'Weight',
+                  '包装': 'Package',
+                  '配件': 'Accessories',
+                  '保修': 'Warranty',
+                  '特点': 'Features',
+                  '材质': 'Material',
+                  '款式': 'Style',
+                  '类型': 'Type',
+                  '尺寸': 'Size',
+                  '电池': 'Battery',
+                  '机芯产地': 'Movement Origin',
+                  '表壳': 'Case',
+                  '表带': 'Strap',
+                  '表盘': 'Dial',
+                  '表镜': 'Crystal',
+                  '夜光': 'Luminous',
+                  '日历': 'Calendar',
+                  '星期': 'Week',
+                  '月相': 'Moon Phase',
+                  '计时': 'Chronograph',
+                  '太阳能': 'Solar',
+                  '自动上链': 'Automatic',
+                  '石英': 'Quartz',
+                  '机械': 'Mechanical',
+              }
+              
+              for key, value in attributes.items():
+                  # 翻译键
+                  en_key = key_mapping.get(key, translate_text(key))
+                  
+                  # 翻译值
+                  en_value = translate_text(value)
+                  
+                  translated[en_key] = en_value
+              
+              return translated
+          
+          # 读取数据
+          with open('cleaned_title.txt', 'r', encoding='utf-8') as f:
+              cleaned_title = f.read().strip()
+          
+          with open('cleaned_attributes.json', 'r', encoding='utf-8') as f:
+              cleaned_attrs = json.load(f)
+          
+          with open('original_title.txt', 'r', encoding='utf-8') as f:
+              original_title = f.read().strip()
+          
+          # 翻译标题
+          english_title = translate_text(cleaned_title)
+          
+          # 翻译属性
+          english_attributes = translate_attributes(cleaned_attrs)
+          
+          # 保存结果
+          with open('english_title.txt', 'w', encoding='utf-8') as f:
+              f.write(english_title)
+          
+          with open('english_attributes.json', 'w', encoding='utf-8') as f:
+              json.dump(english_attributes, f, ensure_ascii=False, indent=2)
+          
+          # 生成报告
+          report = {
+              'url': '${{ github.event.inputs.url }}',
+              'original_title': original_title,
+              'english_title': english_title,
+              'attributes_count': len(english_attributes),
+              'attributes': english_attributes
+          }
+          
+          with open('report.json', 'w', encoding='utf-8') as f:
+              json.dump(report, f, ensure_ascii=False, indent=2)
+          
+          # 打印结果
+          print("\n" + "="*60)
+          print("处理完成")
+          print("="*60)
+          print(f"原始标题: {original_title}")
+          print(f"英文标题: {english_title}")
+          print(f"属性数量: {len(english_attributes)}")
+          print("\n前5个属性:")
+          for i, (key, value) in enumerate(list(english_attributes.items())[:5]):
+              print(f"  {key}: {value}")
+          EOF
+          
+          python translate.py
+          
+      - name: 上传结果
+        uses: actions/upload-artifact@v4
+        with:
+          name: 处理结果
+          path: |
+            original_title.txt
+            cleaned_title.txt
+            english_title.txt
+            english_attributes.json
+            report.json
+          
+      - name: 显示最终结果
+        run: |
+          echo ""
+          echo "="*60
+          echo "最终处理结果"
+          echo "="*60
+          echo ""
+          echo "英文标题:"
+          cat english_title.txt
+          echo ""
+          echo "属性数量:"
+          python -c "
+          import json
+          data = json.load(open('english_attributes.json'))
+          print(len(data))
+          "
+          echo ""
+          echo "下载完整结果: 右侧Artifacts → 处理结果"
+          echo "="*60
