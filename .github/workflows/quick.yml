@@ -1,0 +1,19 @@
+name: 快速测试抓取
+
+on: 
+  workflow_dispatch:
+    inputs:
+      url:
+        description: '测试网址'
+        required: true
+        default: 'https://detail.1688.com/offer/687593385678.html'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 测试访问
+        run: |
+          echo "测试网址：${{ github.event.inputs.url }}"
+          curl -s -o /dev/null -w "状态码：%{http_code}" "${{ github.event.inputs.url }}"
+          echo ""
