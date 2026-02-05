@@ -1,0 +1,76 @@
+name: 1688爬虫
+on: 
+  workflow_dispatch:
+    inputs:
+      url:
+        description: '商品URL'
+        required: true
+        default: 'https://detail.1688.com/offer/695906828296.html'
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+      
+      - name: 安装依赖
+        run: pip install beautifulsoup4 requests lxml
+      
+      - name: 运行爬虫
+        env:
+          TARGET_URL: ${{ github.event.inputs.url }}
+        run: |
+          python -c "
+          import requests, json, re
+          from bs4 import BeautifulSoup
+          
+          # 爬取函数
+          def crawl_1688(url):
+              try:
+                  html = requests.get(url, timeout=15).text
+                  soup = BeautifulSoup(html, 'lxml')
+                  
+                  # 提取信息
+                  title = soup.find('h1').get_text(strip=True) if soup.find('h1') else '无标题'
+                  
+                  # 检查是否为手表
+                  is_watch = any(word in title.lower() for word in ['手表', '腕表'])
+                  
+                  # 构建产品数据
+                  product = {
+                      'url': url,
+                      'title': title,
+                      'is_watch': is_watch,
+                      'brand_removed': is_watch
+                  }
+                  
+                  # 如果是手表，品牌字段设为空
+                  if is_watch:
+                      product['brand'] = ''
+                      product['品牌'] = ''
+                  
+                  return product
+                  
+              except Exception as e:
+                  return {'error': str(e)}
+          
+          # 执行爬取
+          result = crawl_1688('$TARGET_URL')
+          
+          # 保存结果
+          with open('product.json', 'w', encoding='utf-8') as f:
+              json.dump(result, f, ensure_ascii=False, indent=2)
+          
+          print('结果:', result)
+          "
+      
+      - name: 上传结果
+        uses: actions/upload-artifact@v4
+        with:
+          name: 商品数据
+          path: product.json
