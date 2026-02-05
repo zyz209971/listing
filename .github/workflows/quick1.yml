@@ -1,0 +1,40 @@
+name: 简单抓取翻译
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: '1688网址'
+        required: true
+        default: 'https://detail.1688.com/offer/'
+
+jobs:
+  simple-scrape:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 抓取页面
+        run: |
+          echo "开始抓取: ${{ github.event.inputs.url }}"
+          curl -s "${{ github.event.inputs.url }}" | grep -o '<title>[^<]*</title>' | sed 's/<[^>]*>//g' > title.txt
+          echo "中文标题: $(cat title.txt)"
+          
+      - name: 翻译标题
+        run: |
+          echo "安装翻译工具..."
+          pip install googletrans==4.0.0-rc1
+          python -c "
+          from googletrans import Translator
+          translator = Translator()
+          with open('title.txt', 'r') as f:
+              chinese = f.read()
+          english = translator.translate(chinese, src='zh-cn', dest='en').text
+          print('中文标题:', chinese)
+          print('英文翻译:', english)
+          "
+          
+      - name: 保存结果
+        uses: actions/upload-artifact@v4  # 使用v4修复错误
+        with:
+          name: 结果
+          path: title.txt
