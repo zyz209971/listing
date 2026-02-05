@@ -1,0 +1,37 @@
+name: Test BeautifulSoup4 Installation
+
+on: [push, pull_request]
+
+jobs:
+  test-bs4:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install beautifulsoup4 lxml
+        
+    - name: Test BeautifulSoup4
+      run: |
+        python -c "
+from bs4 import BeautifulSoup
+import sys
+
+# 基本测试
+html = '<html><body><h1>GitHub Test</h1><p class=\"test\">Success!</p></body></html>'
+soup = BeautifulSoup(html, 'html.parser')
+
+assert soup.h1.text == 'GitHub Test'
+assert soup.find('p', class_='test').text == 'Success!'
+
+print('✅ BeautifulSoup4 安装和基本功能测试通过！')
+print(f'bs4 版本: {soup.__version__ if hasattr(soup, \"__version__\") else \"Unknown\"}')
+        "
