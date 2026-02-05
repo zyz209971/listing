@@ -1,0 +1,239 @@
+import re
+import json
+import requests
+from html import unescape
+from googletrans import Translator
+from bs4 import BeautifulSoup
+
+def scrape_1688_product(url):
+    """抓取1688商品页面"""
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    }
+    
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        return response.text
+    except Exception as e:
+        print(f"抓取失败: {e}")
+        return None
+
+def clean_html_tags(text):
+    """清理HTML标签和实体"""
+    if not text:
+        return ""
+    text = re.sub(r'<[^>]+>', ' ', text)
+    text = unescape(text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+def extract_title(html):
+    """从HTML中提取页面标题"""
+    soup = BeautifulSoup(html, 'html.parser')
+    
+    # 尝试多种方式提取标题
+    if soup.title and soup.title.string:
+        return clean_html_tags(soup.title.string)
+    
+    meta_title = soup.find('meta', property='og:title')
+    if meta_title and meta_title.get('content'):
+        return clean_html_tags(meta_title.get('content'))
+    
+    h1 = soup.find('h1')
+    if h1:
+        return clean_html_tags(h1.text)
+    
+    return ""
+
+def extract_attributes(html):
+    """提取商品属性"""
+    soup = BeautifulSoup(html, 'html.parser')
+    attributes = {}
+    
+    # 方法1：从表格提取
+    tables = soup.find_all('table', class_=re.compile('offer-table'))
+    for table in tables:
+        rows = table.find_all('tr')
+        for row in rows:
+            th = row.find('th')
+            td = row.find('td')
+            if th and td:
+                key = clean_html_tags(th.text).strip('：:')
+                value = clean_html_tags(td.text)
+                if key and value:
+                    attributes[key] = value
+    
+    # 方法2：从dl列表提取
+    if len(attributes) < 3:
+        dl_list = soup.find_all('dl', class_=re.compile('params'))
+        for dl in dl_list:
+            dt_items = dl.find_all('dt')
+            dd_items = dl.find_all('dd')
+            for dt, dd in zip(dt_items, dd_items):
+                key = clean_html_tags(dt.text).strip('：:')
+                value = clean_html_tags(dd.text)
+                if key and value:
+                    attributes[key] = value
+    
+    return attributes
+
+def remove_brand_info(text):
+    """删除品牌信息，保留机芯品牌"""
+    if not text:
+        return text
+    
+    # 保护机芯品牌
+    movement_brands = [
+        'miyota', 'Miyota', 'MIYOTA', '西铁城机芯', 'citizen机芯',
+        'seiko', 'Seiko', 'SEIKO', '精工机芯', 'nh35', 'nh36', '4r36', '6r15', 
+        'eta', 'ETA', '瑞士机芯', 'swiss', 'Swiss', 'SWISS',
+        'ronda', 'Ronda', 'RONDA', 'isa', 'ISA', 'pc21', 'pc32',
+        '海鸥', 'SeaGull', 'seagull', '北京', 'beijing', '上海', 'shanghai'
+    ]
+    
+    movement_placeholders = {}
+    for movement in movement_brands:
+        if movement in text.lower():
+            placeholder = f"__MOV_{movement.upper().replace(' ', '_')}__"
+            text = re.sub(re.escape(movement), placeholder, text, flags=re.IGNORECASE)
+            movement_placeholders[placeholder] = movement
+    
+    # 删除品牌相关模式
+    brand_patterns = [
+        r'(品牌|牌子|brand|商标|厂牌|厂商|厂家|制造商|生产商|出品|制作)[:：\s]*[^\s,，。!！?？;；、]{1,20}',
+        r'(类似|仿|复刻|同款|风格|款式|设计)[\s\-]*[^\s,，。!！?？;；、]{1,15}[:：\s]*[^\s,，。!！?？;；、]{1,20}',
+        r'(logo|标志|标识|商标|标徽|徽标|印记|刻字|雕刻|镌刻)[:：\s]*[^\s,，。!！?？;；、]{1,20}',
+        r'(原单|尾单|外贸|出口|订单|余单|库存|撤柜|专柜)[\s\-]*[^\s,，。!！?？;；、]{0,15}',
+        r'[^\s,，。!！?？;；、]{1,10}牌(?:\s+[^\s,，。!！?？;；、]{0,10})?',
+    ]
+    
+    for pattern in brand_patterns:
+        text = re.sub(pattern, '', text, flags=re.IGNORECASE)
+    
+    # 恢复机芯品牌
+    for placeholder, movement in movement_placeholders.items():
+        text = text.replace(placeholder, movement)
+    
+    # 清理格式
+    text = re.sub(r'[，,]\s*[，,]', '', text)
+    text = re.sub(r'^\s*[,\-，。！!？?;；、]\s*', '', text)
+    text = re.sub(r'\s*[,\-，。！!？?；、]\s*$', '', text)
+    text = re.sub(r'\s+', ' ', text)
+    
+    return text.strip()
+
+def translate_to_english(text):
+    """翻译文本到英文"""
+    if not text or len(text.strip()) < 2:
+        return text
+    
+    try:
+        translator = Translator()
+        translated = translator.translate(text, src='zh-cn', dest='en')
+        result = translated.text
+        result = re.sub(r'\s+', ' ', result).strip()
+        return result
+    except Exception as e:
+        print(f"翻译错误: {e}")
+        return text
+
+def translate_attributes(attributes):
+    """翻译所有属性"""
+    translated = {}
+    
+    # 常见属性键名翻译映射
+    key_mapping = {
+        '机芯类型': 'Movement', '机芯': 'Movement', '型号': 'Model',
+        '表带材质': 'Strap Material', '表壳材质': 'Case Material',
+        '表盘材质': 'Dial Material', '表镜材质': 'Crystal Material',
+        '表扣': 'Clasp', '表径': 'Case Diameter', '厚度': 'Thickness',
+        '防水': 'Water Resistance', '功能': 'Functions', '适用人群': 'For',
+        '风格': 'Style', '颜色': 'Color', '表带颜色': 'Strap Color',
+        '表盘颜色': 'Dial Color', '产地': 'Origin', '品牌': 'Brand',
+        '重量': 'Weight', '包装': 'Package', '配件': 'Accessories',
+        '保修': 'Warranty', '特点': 'Features', '材质': 'Material',
+        '款式': 'Style', '类型': 'Type', '尺寸': 'Size', '电池': 'Battery',
+        '机芯产地': 'Movement Origin', '表壳': 'Case', '表带': 'Strap',
+        '表盘': 'Dial', '表镜': 'Crystal', '夜光': 'Luminous',
+        '日历': 'Calendar', '星期': 'Week', '月相': 'Moon Phase',
+        '计时': 'Chronograph', '太阳能': 'Solar', '自动上链': 'Automatic',
+        '石英': 'Quartz', '机械': 'Mechanical',
+    }
+    
+    for key, value in attributes.items():
+        en_key = key_mapping.get(key, translate_to_english(key))
+        en_value = translate_to_english(value)
+        translated[en_key] = en_value
+    
+    return translated
+
+def process_product(url):
+    """主处理函数"""
+    print(f"正在处理: {url}")
+    
+    # 1. 抓取页面
+    html = scrape_1688_product(url)
+    if not html:
+        return None
+    
+    # 2. 提取信息
+    original_title = extract_title(html)
+    attributes = extract_attributes(html)
+    
+    print(f"原始标题: {original_title}")
+    print(f"找到 {len(attributes)} 个属性")
+    
+    # 3. 清理品牌信息
+    cleaned_title = remove_brand_info(original_title)
+    
+    cleaned_attributes = {}
+    for key, value in attributes.items():
+        clean_value = remove_brand_info(value)
+        if clean_value:
+            clean_key = remove_brand_info(key)
+            if clean_key:
+                cleaned_attributes[clean_key] = clean_value
+    
+    print(f"清理后标题: {cleaned_title}")
+    
+    # 4. 翻译
+    english_title = translate_to_english(cleaned_title)
+    english_attributes = translate_attributes(cleaned_attributes)
+    
+    print(f"英文标题: {english_title}")
+    print(f"翻译了 {len(english_attributes)} 个属性")
+    
+    # 5. 返回结果
+    result = {
+        'original_title': original_title,
+        'cleaned_title': cleaned_title,
+        'english_title': english_title,
+        'english_attributes': english_attributes,
+        'attributes_count': len(english_attributes)
+    }
+    
+    return result
+
+# 在Jupyter中使用示例
+if __name__ == "__main__":
+    # 输入1688商品URL
+    url = input("请输入1688商品URL: ") or "https://detail.1688.com/offer/1234567890.html"
+    
+    # 处理商品
+    result = process_product(url)
+    
+    if result:
+        print("\n" + "="*60)
+        print("处理结果:")
+        print("="*60)
+        print(f"英文标题: {result['english_title']}")
+        print(f"属性数量: {result['attributes_count']}")
+        print("\n前5个属性:")
+        for i, (key, value) in enumerate(list(result['english_attributes'].items())[:5]):
+            print(f"  {key}: {value}")
+        
+        # 保存结果到文件
+        with open('result.json', 'w', encoding='utf-8') as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+        print("\n结果已保存到 result.json")
