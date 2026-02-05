@@ -17,393 +17,198 @@ jobs:
         run: |
           echo "开始抓取: ${{ github.event.inputs.url }}"
           curl -s "${{ github.event.inputs.url }}" -o product_page.html
-          echo "页面已保存"
           
       - name: 2. 提取属性并生成标题
         run: |
-          echo "安装必要工具..."
-          pip install googletrans==4.0.0-rc1 beautifulsoup4
+          pip install googletrans beautifulsoup4
           
           python << 'EOF'
-          from bs4 import BeautifulSoup
-          from googletrans import Translator
-          import re
-          import json
+import requests
+from bs4 import BeautifulSoup
+from googletrans import Translator
+import re
+import json
+
+# 读取页面
+with open('product_page.html', 'r', encoding='utf-8') as f:
+    soup = BeautifulSoup(f, 'html.parser')
+
+# 查找属性表
+specs = {}
+tables = soup.find_all('table')
+for table in tables:
+    rows = table.find_all('tr')
+    for row in rows:
+        cells = row.find_all(['td', 'th'])
+        if len(cells) >= 2:
+            key = cells[0].get_text(strip=True)
+            value = cells[1].get_text(strip=True) if len(cells) > 1 else ''
+            if key and value:
+                specs[key] = value
+
+# 关键词映射（包含机芯品牌）
+keyword_map = {
+    # 机芯类型
+    '石英': 'Quartz', 
+    '自动机械': 'Automatic', 
+    '机械': 'Mechanical',
+    '太阳能': 'Solar',
+    
+    # 材质
+    '不锈钢': 'Stainless Steel', 
+    '钛合金': 'Titanium',
+    '陶瓷': 'Ceramic',
+    '皮质': 'Leather',
+    
+    # 功能
+    '防水': 'Water Resistant', 
+    '夜光': 'Luminous', 
+    '蓝宝石': 'Sapphire',
+    '日历': 'Calendar',
+    '计时': 'Chronograph',
+    
+    # 风格
+    '男士': "Men's",
+    '女士': "Women's", 
+    '商务': 'Business', 
+    '运动': 'Sports',
+    '休闲': 'Casual',
+    
+    # 机芯品牌
+    'miyota': 'Miyota',
+    '西铁城': 'Citizen',
+    '精工': 'Seiko',
+    'eta': 'ETA',
+    'ronda': 'Ronda',
+    '天马渡': 'Tianmadu',
+    '杭州': 'Hangzhou',
+    
+    # 品牌关键词（用于过滤）
+    '品牌': 'brand',
+    '厂家': 'factory',
+    '商标': 'trademark',
+}
+
+# 提取所有文本
+all_text = ' '.join(specs.keys()) + ' ' + ' '.join(specs.values())
+all_text_lower = all_text.lower()
+
+# 提取关键词
+keywords = []
+movement_brand = None
+
+# 先提取机芯品牌
+movement_brands = {
+    'miyota': 'Miyota',
+    'citizen': 'Citizen', 
+    'seiko': 'Seiko',
+    'eta': 'ETA',
+    'ronda': 'Ronda',
+    '精工': 'Seiko',
+    '西铁城': 'Citizen',
+    '天马渡': 'Tianmadu',
+}
+
+for brand_key, brand_en in movement_brands.items():
+    if brand_key in all_text_lower:
+        movement_brand = brand_en
+        break
+
+# 提取其他关键词
+for cn, en in keyword_map.items():
+    if cn.lower() in all_text_lower and en not in ['brand', 'factory', 'trademark']:
+        keywords.append(en)
+
+# 生成标题
+title_parts = []
+
+# 1. 材质
+material_keywords = ['Stainless Steel', 'Titanium', 'Ceramic', 'Leather']
+for mat in material_keywords:
+    if mat in keywords:
+        title_parts.append(mat)
+        break
+
+# 2. 机芯类型
+movement_found = False
+movement_keywords = ['Quartz', 'Automatic', 'Mechanical', 'Solar']
+for move in movement_keywords:
+    if move in keywords:
+        title_parts.append(move)
+        movement_found = True
+        break
+
+if not movement_found:
+    title_parts.append('Watch')
+else:
+    title_parts.append('Watch')
+
+# 3. 机芯品牌
+if movement_brand:
+    title_parts.append(f'with {movement_brand} Movement')
+
+# 4. 风格
+style_keywords = ['Business', 'Sports', 'Casual']
+for style in style_keywords:
+    if style in keywords:
+        title_parts.append(f'{style} Style')
+        break
+
+# 5. 功能
+feature_keywords = ['Water Resistant', 'Luminous', 'Sapphire', 'Calendar', 'Chronograph']
+features = [f for f in feature_keywords if f in keywords]
+if features:
+    if len(features) > 1:
+        title_parts.append(f'with {features[0]} and {features[1]}')
+    else:
+        title_parts.append(f'with {features[0]}')
+
+# 6. 性别
+if "Men's" in keywords:
+    title_parts.append("Men's")
+elif "Women's" in keywords:
+    title_parts.append("Women's")
+
+# 组合标题
+english_title = ' '.join(title_parts)
+
+# 保存结果
+result = {
+    'title': english_title,
+    'movement_brand': movement_brand,
+    'specs_count': len(specs),
+    'keywords': keywords,
+    'title_parts': title_parts
+}
+
+with open('result.json', 'w', encoding='utf-8') as f:
+    json.dump(result, f, ensure_ascii=False, indent=2)
+
+print(f"✅ 生成标题: {english_title}")
+print(f"🔧 机芯品牌: {movement_brand or '未识别'}")
+print(f"📊 属性数量: {len(specs)}")
+print(f"🔑 关键词: {', '.join(keywords)}")
+EOF
           
-          translator = Translator()
-          
-          # 读取页面
-          with open('product_page.html', 'r', encoding='utf-8') as f:
-              soup = BeautifulSoup(f, 'html.parser')
-          
-          print("🔄 开始提取商品属性...")
-          
-          # 1. 查找属性表格
-          def find_spec_table(soup):
-              """查找商品规格参数表"""
-              table_selectors = [
-                  'table.params', 'table.spec-table', '.offer-params',
-                  '.detail-table', 'table[class*="param"]', 'table[class*="spec"]',
-                  '.sku-attr', '.props-table'
-              ]
-              
-              for selector in table_selectors:
-                  table = soup.select_one(selector)
-                  if table:
-                      return table
-              
-              # 备用：查找所有表格
-              tables = soup.find_all('table')
-              for table in tables:
-                  if len(table.find_all('tr')) >= 2:
-                      return table
-              
-              return None
-          
-          # 2. 提取属性键值对
-          def extract_specifications(table):
-              """从表格提取规格参数"""
-              specs = {}
-              
-              if not table:
-                  return specs
-              
-              rows = table.find_all('tr')
-              for row in rows:
-                  cells = row.find_all(['td', 'th'])
-                  if len(cells) >= 2:
-                      key = cells[0].get_text(strip=True)
-                      value = cells[1].get_text(strip=True) if len(cells) > 1 else ''
-                      
-                      if key and value and len(key) < 50:
-                          specs[key] = value
-              
-              return specs
-          
-          # 3. 智能清洗和分类属性
-          def clean_and_categorize_specs(specs):
-              """清洗属性并分类"""
-              # 需要移除的品牌关键词
-              brand_keywords = [
-                  '品牌', '商标', '厂家', '制造商', '生产商', 
-                  '公司', '厂名', '产地', '生产厂家'
-              ]
-              
-              # 需要保留的机芯品牌
-              movement_brands = ['miyota', 'seiko', 'eta', 'ronda', 'citizen', '精工', '西铁城']
-              
-              cleaned_specs = {}
-              important_attributes = []
-              
-              for key, value in specs.items():
-                  key_lower = key.lower()
-                  value_lower = value.lower()
-                  
-                  # 检查是否是品牌信息
-                  is_brand_info = False
-                  for brand_kw in brand_keywords:
-                      if brand_kw in key_lower:
-                          is_brand_info = True
-                          break
-                  
-                  # 如果是品牌信息但不是机芯品牌，跳过
-                  if is_brand_info:
-                      is_movement_brand = False
-                      for movement in movement_brands:
-                          if movement in value_lower:
-                              is_movement_brand = True
-                              break
-                      
-                      if not is_movement_brand:
-                          continue
-                  
-                  # 清理后的属性
-                  cleaned_specs[key] = value
-                  
-                  # 识别重要属性用于标题
-                  if any(kw in key_lower for kw in ['机芯', '类型', '材质', '风格', '功能', '防水', '表带', '表镜']):
-                      important_attributes.append(f"{key}:{value}")
-                  elif '防水' in value_lower or '夜光' in value_lower or '蓝宝石' in value_lower:
-                      important_attributes.append(f"{key}:{value}")
-              
-              return cleaned_specs, important_attributes
-          
-          # 4. 从属性生成标题关键词
-          def extract_title_keywords(attributes, specs):
-              """从属性提取标题关键词"""
-              # 关键词映射表
-              keyword_map = {
-                  # 机芯类型
-                  '石英': 'Quartz',
-                  '自动机械': 'Automatic Mechanical',
-                  '机械': 'Mechanical',
-                  '太阳能': 'Solar',
-                  '电子': 'Digital',
-                  '光动能': 'Eco-Drive',
-                  
-                  # 材质
-                  '不锈钢': 'Stainless Steel',
-                  '钛合金': 'Titanium',
-                  '陶瓷': 'Ceramic',
-                  '钨钢': 'Tungsten Steel',
-                  '塑料': 'Plastic',
-                  '橡胶': 'Rubber',
-                  '尼龙': 'Nylon',
-                  '皮质': 'Leather',
-                  '真皮': 'Genuine Leather',
-                  '金属': 'Metal',
-                  '合金': 'Alloy',
-                  
-                  # 功能
-                  '防水': 'Water Resistant',
-                  '夜光': 'Luminous',
-                  '日历': 'Calendar',
-                  '星期': 'Week',
-                  '计时': 'Chronograph',
-                  '闹钟': 'Alarm',
-                  '世界时': 'World Time',
-                  '温度': 'Temperature',
-                  '气压': 'Barometer',
-                  '指南针': 'Compass',
-                  
-                  # 风格
-                  '商务': 'Business',
-                  '休闲': 'Casual',
-                  '运动': 'Sports',
-                  '时尚': 'Fashion',
-                  '复古': 'Vintage',
-                  '经典': 'Classic',
-                  '简约': 'Minimalist',
-                  '奢华': 'Luxury',
-                  
-                  # 表镜
-                  '蓝宝石': 'Sapphire Crystal',
-                  '矿物玻璃': 'Mineral Glass',
-                  '亚克力': 'Acrylic',
-                  
-                  # 机芯品牌
-                  'miyota': 'Miyota',
-                  '西铁城': 'Citizen',
-                  '精工': 'Seiko',
-                  'eta': 'ETA',
-                  'ronda': 'Ronda',
-              }
-              
-              all_text = ' '.join(attributes) + ' ' + ' '.join(specs.values())
-              
-              extracted_keywords = []
-              for chinese, english in keyword_map.items():
-                  if chinese.lower() in all_text.lower():
-                      extracted_keywords.append(english)
-              
-              # 去重
-              extracted_keywords = list(dict.fromkeys(extracted_keywords))
-              
-              return extracted_keywords
-          
-          # 5. 智能组合英文标题
-          def build_smart_title(keywords, specs):
-              """用关键词智能组合标题"""
-              
-              # 分类关键词
-              movement_type = []
-              material = []
-              features = []
-              style = []
-              movement_brand = []
-              
-              movement_indicators = ['Quartz', 'Automatic', 'Mechanical', 'Solar', 'Digital']
-              material_indicators = ['Steel', 'Titanium', 'Ceramic', 'Leather', 'Metal', 'Alloy']
-              feature_indicators = ['Water', 'Luminous', 'Calendar', 'Chronograph', 'Alarm']
-              style_indicators = ['Business', 'Casual', 'Sports', 'Fashion', 'Vintage']
-              brand_indicators = ['Miyota', 'Citizen', 'Seiko', 'ETA', 'Ronda']
-              
-              for kw in keywords:
-                  kw_lower = kw.lower()
-                  if any(indicator.lower() in kw_lower for indicator in movement_indicators):
-                      movement_type.append(kw)
-                  elif any(indicator.lower() in kw_lower for indicator in material_indicators):
-                      material.append(kw)
-                  elif any(indicator.lower() in kw_lower for indicator in feature_indicators):
-                      features.append(kw)
-                  elif any(indicator.lower() in kw_lower for indicator in style_indicators):
-                      style.append(kw)
-                  elif any(indicator.lower() in kw_lower for indicator in brand_indicators):
-                      movement_brand.append(kw)
-              
-              # 构建标题结构
-              title_parts = []
-              
-              # 1. 材质
-              if material:
-                  title_parts.append(material[0])
-              
-              # 2. 机芯类型
-              if movement_type:
-                  title_parts.append(movement_type[0])
-              else:
-                  title_parts.append("Watch")
-              
-              # 3. 机芯品牌
-              if movement_brand:
-                  title_parts.append(f"with {movement_brand[0]} Movement")
-              
-              # 4. 风格
-              if style:
-                  title_parts.append(f"{style[0]} Style")
-              
-              # 5. 功能
-              if features:
-                  features_str = ", ".join(features[:2])
-                  title_parts.append(f"with {features_str}")
-              
-              # 6. 性别（从属性判断）
-              gender = ""
-              for value in specs.values():
-                  if '男' in value:
-                      gender = "Men's"
-                      break
-                  elif '女' in value:
-                      gender = "Women's"
-                      break
-              
-              if gender:
-                  title_parts.append(gender)
-              
-              # 组合标题
-              if not title_parts:
-                  return "High Quality Watch"
-              
-              final_title = " ".join(title_parts)
-              
-              # 确保包含Watch
-              if 'watch' not in final_title.lower():
-                  final_title += " Wristwatch"
-              
-              return final_title
-          
-          # 6. 翻译属性
-          def translate_specifications(specs):
-              """翻译属性为英文"""
-              translated = {}
-              
-              for key, value in list(specs.items())[:15]:  # 只翻译前15个
-                  try:
-                      if re.search(r'[\\u4e00-\\u9fff]', key):  # 包含中文
-                          trans_key = translator.translate(key, src='zh-cn', dest='en').text
-                      else:
-                          trans_key = key
-                      
-                      if re.search(r'[\\u4e00-\\u9fff]', value):  # 包含中文
-                          trans_value = translator.translate(value, src='zh-cn', dest='en').text
-                      else:
-                          trans_value = value
-                      
-                      translated[trans_key] = trans_value
-                  except:
-                      translated[key] = value
-              
-              return translated
-          
-          # 主处理流程
-          print("=" * 60)
-          
-          # 查找属性表
-          spec_table = find_spec_table(soup)
-          
-          if not spec_table:
-              print("❌ 未找到商品属性表，尝试备用方法...")
-              # 备用：查找所有包含规格的文本
-              all_text = soup.get_text()
-              specs = {}
-              # 简单提取关键词
-          else:
-              # 提取属性
-              raw_specs = extract_specifications(spec_table)
-              print(f"📋 找到 {len(raw_specs)} 个属性")
-              
-              # 清洗和分类
-              cleaned_specs, important_attrs = clean_and_categorize_specs(raw_specs)
-              print(f"🧹 清洗后保留 {len(cleaned_specs)} 个属性")
-              
-              if important_attrs:
-                  print(f"🔑 重要属性: {important_attrs}")
-              
-              # 提取关键词
-              title_keywords = extract_title_keywords(important_attrs, cleaned_specs)
-              print(f"🎯 提取关键词: {title_keywords}")
-              
-              # 生成标题
-              english_title = build_smart_title(title_keywords, cleaned_specs)
-              print(f"✨ 生成标题: {english_title}")
-              
-              # 翻译属性
-              translated_specs = translate_specifications(cleaned_specs)
-              
-              # 保存结果
-              result = {
-                  'generated_title': english_title,
-                  'original_specs_count': len(raw_specs),
-                  'cleaned_specs_count': len(cleaned_specs),
-                  'title_keywords': title_keywords,
-                  'translated_specifications': translated_specs,
-                  'important_attributes': important_attrs
-              }
-              
-              with open('result.json', 'w', encoding='utf-8') as f:
-                  json.dump(result, f, ensure_ascii=False, indent=2)
-              
-              # 输出摘要
-              print("\\n✅ 处理完成！")
-              print(f"   生成标题: {english_title}")
-              print(f"   关键词数量: {len(title_keywords)}")
-              print(f"   翻译属性: {len(translated_specs)} 项")
-              
-              # 显示前5个翻译属性
-              print("\\n📄 翻译后属性 (示例):")
-              for i, (key, value) in enumerate(list(translated_specs.items())[:5]):
-                  print(f"   {i+1}. {key}: {value}")
-          
-          EOF
-          
-      - name: 3. 显示最终结果
+      - name: 3. 显示结果
         run: |
-          echo "🎉 智能标题生成完成"
-          echo "======================"
-          
+          echo "===== 生成结果 ====="
           if [ -f "result.json" ]; then
             python << 'EOF'
-            import json
-            
-            with open('result.json', 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            
-            print(f"📌 生成标题: {data.get('generated_title', '无')}")
-            print(f"🔑 使用关键词: {', '.join(data.get('title_keywords', []))}")
-            print(f"📊 属性数量: {data.get('cleaned_specs_count', 0)} 项")
-            
-            # 显示完整标题
-            print("\\n✨ 优化后英文标题:")
-            print("-" * 50)
-            print(data.get('generated_title', '无'))
-            print("-" * 50)
-            
-            # 显示重要属性
-            important = data.get('important_attributes', [])
-            if important:
-                print("\\n🔍 重要原始属性:")
-                for attr in important[:5]:
-                    print(f"   • {attr}")
-            
-            EOF
+import json
+with open('result.json', 'r', encoding='utf-8') as f:
+    data = json.load(f)
+print(f"标题: {data['title']}")
+print(f"机芯品牌: {data.get('movement_brand', '无')}")
+print(f"属性数量: {data['specs_count']}")
+EOF
           else
-            echo "❌ 未生成结果文件"
+            echo "未找到结果文件"
           fi
           
       - name: 4. 保存结果
         uses: actions/upload-artifact@v4
         with:
-          name: 属性提取结果
+          name: 结果
           path: |
             result.json
-            product_page.html
